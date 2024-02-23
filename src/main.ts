@@ -2,6 +2,7 @@ import { GatewayIntentBits, Client, Partials, Message } from "discord.js";
 import dotenv from "dotenv";
 import logger from "./lib/logger";
 import { z } from "zod";
+import fs from "fs";
 
 //.envファイルを読み込む
 dotenv.config();
@@ -29,6 +30,13 @@ let data: {
   num: number; //RUSHまでの回数
 }[]
 
+// サーバ閉じたときにプレイヤーデータを保存する
+process.on("SIGINT", () => {
+  logger.info("Ctrl + C Pressed.")
+  fs.writeFileSync("src/data/userData.json", JSON.stringify({userData: data}));
+  process.exit(0);
+});
+
 // Bot起動確認
 client.once("ready", async () => {
   const envSchema = z.object({
@@ -42,7 +50,13 @@ client.once("ready", async () => {
   // 環境変数の設定ミス検知
   if (!envSchema.success) {
     logger.error(`fastHunt=${fastHunt} prob=${prob} bet=${bet}`);
-    throw new Error("exit.");
+    process.exit(-1);;
+  }
+
+  // src/data/userData.jsonが存在するか検知
+  if (!fs.existsSync("src/data/userData.json")) {
+    logger.error(`src/data/userData.json does not exist. Please create src/data/userData.json and write {"userData":[]} in it.`);
+    process.exit(-1);
   }
 
   logger.info(`Bot Online! (${new Date().toLocaleString()})`);

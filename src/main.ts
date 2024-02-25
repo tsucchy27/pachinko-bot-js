@@ -22,12 +22,14 @@ const client = new Client({
 const fastHunt = process.env.FASTHUNT; //コマンドの先頭文字
 const prob = Number(process.env.PROB); //確率
 const bet = Number(process.env.BET);   //1玉何円か
+const acom_rate = Number(process.env.RATE); //借金の利息(%)
 
 // プレイヤーデータ
 let data: {
   userId: string;
-  score: number; //スコア
-  num: number; //RUSHまでの回数
+  score: number; //所持金
+  num: number; //RUSHまでに回した回数
+  debt: number; //借金
 }[]
 
 // サーバ閉じたときにプレイヤーデータを保存する
@@ -43,13 +45,14 @@ client.once("ready", async () => {
     fastHunt: z.string(),
     prob: z.number(),
     bet: z.number(),
+    acom_rate: z.number().min(0),
   }).safeParse({
-    fastHunt, prob, bet
+    fastHunt, prob, bet, acom_rate
   });
 
   // 環境変数の設定ミス検知
   if (!envSchema.success) {
-    logger.error(`fastHunt=${fastHunt} prob=${prob} bet=${bet}`);
+    logger.error(`fastHunt=${fastHunt} prob=${prob} bet=${bet} acom_rate=${acom_rate}`);
     process.exit(-1);;
   }
 
@@ -82,14 +85,18 @@ client.on("messageCreate", async (message: Message) => {
 
     // プレイヤーデータがなければ、作成
     if (!data.find((d) => d.userId === message.author.id)) {
-      logger.warn(`${message.author.id} not found.`);
-      void message.channel.send("プレイヤーデータが存在しません。作成します。");
-      addPlayer(message.author.id);
+      addPlayer(message);
     }
 
     // プレイヤーデータのインデックスを取得
-    const index = data.findIndex((d) => d.userId === message.author.id);
-    logger.debug(`index: ${index}`);
+    const index = getIndex(message);
+
+    // 所持金が0円なら借金を促す
+    if (data[index].score <= 0) {
+      logger.debug(`${data[index].userId} doesn't have any money.`)
+      void message.channel.send(`お金がないよ！アコムで借金しよう^^ (所持金:￥${data[index].score.toLocaleString()})`);
+      return;
+    }
 
     // プレイヤーの手
     const p = Number(message.content.substring(2));
@@ -118,16 +125,60 @@ client.on("messageCreate", async (message: Message) => {
   else if (new RegExp(`^${fastHunt}show$`).test(message.content)) {
     // プレイヤーデータがなければ、警告
     if (!data.find((d) => d.userId === message.author.id)) {
-      logger.warn(`${message.author.id} not found.`);
-      void message.channel.send(`プレイヤーデータが存在しません。${message.author.displayName}を登録します。`);
-      addPlayer(message.author.id);
+      addPlayer(message);
     }
 
     // プレイヤーデータのインデックスを取得
-    const index = data.findIndex((d) => d.userId === message.author.id);
-    logger.debug(`index: ${index}`);
+    const index = getIndex(message);
 
-    void message.channel.send(`【${message.author.displayName}のデータ】\n所持金：￥${data[index].score.toLocaleString()}\n回数：${data[index].num}回`);
+    void message.channel.send(`【${message.author.displayName}のデータ】\n所持金：￥${data[index].score.toLocaleString()}\nRushまでに回した回数：${data[index].num}回\n借金額：￥${data[index].debt.toLocaleString()}`);
+  }
+
+  // 借金コマンド(!acom123)
+  else if (new RegExp(`^${fastHunt}acom[0-9]+$`).test(message.content)) {
+    // プレイヤーデータのインデックスを取得
+    const index = getIndex(message);
+
+    // 借りる額
+    const amount = Number(message.content.substring(5));
+
+    // 利息含めた借金額
+    const dept_amo = amount + amount * (acom_rate / 100);
+
+    data[index].score += amount;
+    data[index].debt += dept_amo;
+
+    void message.channel.send(`${dept_amo}円の借金を背負った。 (所持金:￥${data[index].score.toLocaleString()}／借金:￥${data[index].debt.toLocaleString()})`);
+  }
+
+  // 借金レート表示コマンド(!rate)
+  else if (new RegExp(`^${fastHunt}rate$`).test(message.content)) {
+    void message.channel.send(`現在の利息：${acom_rate}％`);
+  }
+
+  // 返済コマンド(!repay123)
+  else if (new RegExp(`^${fastHunt}repay[0-9]+$`).test(message.content)) {
+    const amount = Number(message.content.substring(6));
+    const index = getIndex(message);
+
+    // 所持金が指定額より少なかったら、警告
+    if (data[index].score < amount) {
+      void message.channel.send(`所持金が足りません。(所持金:￥${data[index].score.toLocaleString()}／借金:￥${data[index].debt.toLocaleString()})`);
+    }
+
+    // 指定額が超過していたら、完済
+    else if (data[index].debt <= amount) {
+      data[index].score -= data[index].debt;
+      data[index].debt = 0;
+      void message.channel.send(`借金完済!!おめでとうございます^^ (所持金:￥${data[index].score.toLocaleString()}／借金:￥${data[index].debt.toLocaleString()})`);
+    }
+
+    // 指定額返済
+    else {
+      data[index].score -= amount;
+      data[index].debt -= amount;
+      void message.channel.send(`${amount}円返済しました。(所持金:￥${data[index].score.toLocaleString()}／借金:￥${data[index].debt.toLocaleString()})`);
+    }
   }
 });
 
@@ -200,14 +251,34 @@ function sleep(ms: number) {
 
 /**
  * プレイヤーの追加
+ * @param message Messageオブジェクト
  * @param userId ユーザID
  */
-function addPlayer(userId: string) {
+function addPlayer(message: Message) {
+  const userId = message.author.id;
+
   data.push({
     userId,
-    score: 0,
+    score: 20000,
     num: 0,
+    debt: 0,
   })
+
+  // プレイヤーデータのインデックスを取得
+  const index = getIndex(message);
+
+  logger.warn(`${message.author.id} not found.`);
+  void message.channel.send(`プレイヤーデータが存在しません。${message.author.displayName}を登録します。(所持金:￥${data[index].score.toLocaleString()})`);
 }
 
-void client.login(process.env.PACHINKO_TOKEN);
+/**
+ * プレイヤーデータのインデックスの取得
+ * @param message Messageオブジェクト
+ */
+function getIndex(message: Message): number {
+  const index = data.findIndex((d) => d.userId === message.author.id);
+  logger.debug(`index: ${index}`);
+  return index;
+}
+
+void client.login(process.env.NODE_ENV === "production" ? process.env.PACHINKO_TOKEN : process.env.TEST_TOKEN);

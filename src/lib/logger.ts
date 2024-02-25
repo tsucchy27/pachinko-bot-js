@@ -9,9 +9,11 @@ log4js.configure({
   },
   categories: {
     default: { appenders: ["out"], level: "debug" },
+    production: { appenders: ["out"], level: "info" },
+    development: { appenders: ["out"], level: "debug" },
   },
 });
 
-const logger = log4js.getLogger();
+const logger = log4js.getLogger(process.env.NODE_ENV && ["production", "development"].includes(process.env.NODE_ENV) ? process.env.NODE_ENV : undefined);
 
 export default logger;
